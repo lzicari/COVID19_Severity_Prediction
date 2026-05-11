@@ -1,0 +1,313 @@
+---
+title: "analysis"
+output: html_document
+date: "2026-05-11"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(tidymodels)
+library(glmnet)
+library(earth)
+library(gam)
+library(pROC)
+library(pdp)
+library(vip)
+library(gridExtra)
+library(gbm)
+```
+
+### Loading and Cleaning
+
+```{r Cleaning}
+load("severity.RData")
+
+# Dropping rows with missing values and ID variable
+dat <- na.omit(dat) %>%
+  select(-id)
+
+# Factoring & Labeling
+
+dat$gender <- factor(dat$gender, levels = c(0, 1), labels = c("Female", "Male"))
+dat$vaccine <- factor(dat$vaccine, levels = c(0, 1), labels = c("Unvaccinated", "Vaccinated"))
+dat$hypertension <- factor(dat$hypertension, levels = c(0, 1), labels = c("No", "Yes"))
+dat$diabetes <- factor(dat$diabetes, levels = c(0, 1), labels = c("No", "Yes"))
+dat$severity <- factor(dat$severity, levels = c(0, 1), labels = c("not_severe", "severe"))
+dat$race <- factor(dat$race, levels = c(1, 2, 3, 4), labels = c("White", "Asian", "Black", "Hispanic"))
+dat$smoking <- factor(dat$smoking, levels = c(0, 1, 2), labels = c("Never", "Former", "Current"))
+```
+
+### Data preperation and partitioning for modeling
+
+```{r}
+# Random 1000 sample with Uni
+set.seed(3015)
+my_dat <- dat[sample(nrow(dat), 1000), ]
+
+# 80/20 split
+set.seed(3015)
+data_split <- initial_split(my_dat, prop = 0.80)
+training_data <- training(data_split)
+testing_data <- testing(data_split)
+```
+
+### Summary Statistics
+
+```{r}
+summary(my_dat)
+
+# Combined Exploratory Figure
+featurePlot(x = my_dat[, c("age", "bmi", "SBP", "LDL", "depression")], 
+            y = my_dat$severity, 
+            plot = "box", 
+            scales = list(x = list(relation = "free"), y = list(relation = "free")),
+            main = "Distribution of Clinical Factors by Severity")
+```
+
+---
+
+# Training Simpler Models 
+
+### Logistic Regression
+```{r}
+# CV Control
+ctrl <- trainControl(method = "cv", number = 10, 
+                     summaryFunction = twoClassSummary, 
+                     classProbs = TRUE)
+
+# Baseline: Simple Logistic Regression (GLM) 
+set.seed(3015)
+model.glm <- train(severity ~ ., data = training_data,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+summary(model.glm$finalModel)
+```
+
+### Penalized Logistic Regression (Elastic Net) 
+
+```{r}
+glmnGrid <- expand.grid(.alpha = seq(0, 1, length = 21),
+                        .lambda = exp(seq(-8, -1, length = 50)))
+set.seed(3015)
+model.enet <- train(severity ~ ., data = training_data,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+model.enet$bestTune
+
+myCol = rainbow(25)
+myPar = list(superpose.symbol = list(col = myCol),
+             superpose.line = list(col = myCol))
+
+plot(model.enet , par.settings = myPar, xTrans = log)
+```
+
+### Multivariate Adaptive Regression Splines (MARS)
+
+```{r}
+set.seed(3015)
+model.mars <- train(severity ~ ., 
+                    data = training_data,
+                    method = "earth", 
+                    tuneGrid = expand.grid(degree = 1:4, nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)
+
+ggplot(model.mars)
+model.mars$bestTune
+```
+
+### Generalized Additive Model (GAM)
+
+```{r}
+set.seed(3015)
+model.gam <- train(severity ~ .,
+                   data = training_data,
+                   method = "gam", 
+                   metric = "ROC", 
+                   trControl = ctrl)
+
+model.gam$bestTune
+model.gam$finalModel
+plot(model.gam$finalModel, se = TRUE)
+summary(model.gam$finalModel)
+
+par(mfrow = c(2, 2)) 
+
+
+plot(model.gam$finalModel, 
+     shade = TRUE, 
+     seWithMean = TRUE, 
+     main = "Clinical Nonlinear Trends (2021-2023)", 
+     col = "blue", 
+     pch = 16)
+
+par(mfrow = c(1, 1))
+```
+
+# Training Advanced models
+
+```{r}
+# Boosting (GBM) 
+gbmA.grid <- expand.grid(n.trees = c(100, 500, 1000, 2000, 5000), 
+                        interaction.depth = 1:5, 
+                        shrinkage = c(0.001, 0.003, 0.005),
+                        n.minobsinnode = 10) 
+set.seed(3015)
+model.gbm <- train(severity ~ ., 
+                   data = training_data, 
+                   method = "gbm",
+                   distribution = "adaboost",
+                   tuneGrid = gbmA.grid,
+                   metric = "ROC",
+                   trControl = ctrl, 
+                   verbose = FALSE) 
+
+ggplot(model.gbm, highlight = TRUE)
+```
+
+
+```{r}
+# SVM with Radial Kernel 
+svmr.grid <- expand.grid(C = exp(seq(1, 7, len = 20)), 
+                         sigma = exp(seq(-10, -2, len = 10))) 
+set.seed(3015)
+model.svm <- train(severity ~ ., 
+                    data = training_data, 
+                    method = "svmRadialSigma",
+                    tuneGrid = svmr.grid, 
+                    metric = "ROC", 
+                    trControl = ctrl) 
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+superpose.line = list(col = myCol))
+plot(model.svm, highlight = TRUE, par.settings = myPar)
+```
+
+### Tuning visual for all models with grids
+
+```{r}
+# Tuning plots 
+# Elastic Net tuning plot 
+p_enet <- plot(model.enet, par.settings = myPar, xTrans = log, main = "Enet Tuning")
+
+# MARS tuning plot 
+p_mars <- ggplot(model.mars) + ggtitle("MARS Tuning")
+
+# Boosting tuning plot 
+p_gbm <- ggplot(model.gbm, highlight = TRUE) + ggtitle("Boosting Tuning")
+
+# SVM tuning plot 
+p_svm <- plot(model.svm, highlight = TRUE, par.settings = myPar, main = "SVM Tuning")
+
+# Grid
+grid.arrange(p_enet, p_mars, p_gbm, p_svm, 
+             nrow = 2, ncol = 2,
+             top = "Figure: Model Selection and Hyperparameter Tuning")
+```
+
+
+```{r}
+# Variable Importance Plot for the Advanced Models
+vip(model.gbm, method = "model") + ggtitle("Key Factors for COVID-19 Severity (Boosting)")
+
+# Partial Dependence Plots for most important continuous variables
+# p1 - Age
+p1 <- pdp::partial(model.gbm, pred.var = "age", grid.resolution = 100, prob = TRUE) %>%
+  autoplot(rug = TRUE, train = training_data) + 
+  ggtitle("Influence of Age") +
+  ylab("Prob(Severe)")
+
+# p2 -  Systolic Blood Pressure (SBP)
+p2 <- pdp::partial(model.gbm, pred.var = "SBP", grid.resolution = 100, prob = TRUE) %>%
+  autoplot(rug = TRUE, train = training_data) + 
+  ggtitle("Influence of SBP") +
+  ylab("Prob(Severe)")
+
+# p3 - Body Mass Index (BMI)
+p3 <- pdp::partial(model.gbm, pred.var = "bmi", grid.resolution = 100, prob = TRUE) %>%
+  autoplot(rug = TRUE, train = training_data) + 
+  ggtitle("Influence of BMI") +
+  ylab("Prob(Severe)")
+
+# Combining
+grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+---
+
+# Internal Model Comparison
+```{r}
+# Compare all trained models 
+resamp <- resamples(list(
+  GLM = model.glm, 
+  ENET = model.enet, 
+  MARS = model.mars, 
+  GAM = model.gam, 
+  Boosting = model.gbm, 
+  SVM = model.svm
+)) 
+
+# Summarize the performance metrics (ROC, Sens, Spec) across resamples
+summary(resamp) 
+
+# Visualize the ROC performance comparison
+bwplot(resamp, metric = "ROC") 
+```
+
+---
+
+# Model Evaluation of top performers on Test Set
+
+```{r}
+# Final validation on the Test Set (n=200) of best simple and advanced models
+probs_glm  <- predict(model.glm,  newdata = testing_data, type = "prob")[, "severe"]
+probs_enet <- predict(model.enet, newdata = testing_data, type = "prob")[, "severe"]
+probs_gbm  <- predict(model.gbm,  newdata = testing_data, type = "prob")[, "severe"]
+probs_svm  <- predict(model.svm,  newdata = testing_data, type = "prob")[, "severe"]
+
+# Final Test ROC
+roc_glm_final  <- roc(testing_data$severity, probs_glm)
+roc_enet_final <- roc(testing_data$severity, probs_enet) 
+roc_gbm_final  <- roc(testing_data$severity, probs_gbm)
+roc_svm_final  <- roc(testing_data$severity, probs_svm)
+
+# Create the final comparison figure
+ggroc(list(GLM = roc_glm_final, 
+           ENET = roc_enet_final, 
+           Boosting = roc_gbm_final, 
+           SVM = roc_svm_final), 
+      legacy.axes = TRUE) +
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+  ggtitle("Final Test Set Performance Comparison")
+
+
+auc_table <- data.frame(
+  Model = c("Baseline GLM", "Elastic Net (Best Simple)", "Boosting", "SVM"),
+  Test_AUC = c(auc(roc_glm_final), auc(roc_enet_final), auc(roc_gbm_final), auc(roc_svm_final))
+)
+print(auc_table)
+```
+
+---
+
+# Predictive Risk Score
+
+```{r}
+# Generate the risk scores (probabilities) using the best-performing model (Boosting)
+test_risk_scores <- predict(model.gbm, newdata = testing_data, type = "prob")[, "severe"]
+
+# Attach scores to a summary table to demonstrate the clinical tool
+risk_score_report <- testing_data %>%
+  mutate(Risk_Score = round(test_risk_scores, 4)) %>%
+  select(age, gender, vaccine, bmi, Risk_Score)
+
+# Display the first 10 participants to show the individual risk quantification
+head(risk_score_report, 10)
+```
+

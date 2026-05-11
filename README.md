@@ -1,1 +1,2 @@
 # COVID19_Severity_Prediction
+This research study aims to identify key factors that predict the severity of COVID-19 illness. This study collects demographic information, clinical variables, and disease severity among participants infected with COVID-19 between 2021 and 2023. The goal is to develop a robust prediction model for COVID-19 severity and understand how predictors impact the risk of severe infection. We will compare simple models like elastic net, GAM, and MARS to more advanced methods such as Boosting and SVM to evaluate which models perform best. 
