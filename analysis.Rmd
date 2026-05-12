@@ -266,19 +266,19 @@ vip(model.gbm, method = "model") + ggtitle("Key Factors for COVID-19 Severity (B
 
 # Partial Dependence Plots for most important continuous variables
 # p1 - Age
-p1 <- pdp::partial(model.gbm, pred.var = "age", grid.resolution = 100, prob = TRUE) %>%
+p1 <- pdp::partial(model.gbm, pred.var = "age", which.class = 2,  grid.resolution = 100, prob = TRUE) %>%
   autoplot(rug = TRUE, train = training_data) + 
   ggtitle("Influence of Age") +
   ylab("Prob(Severe)")
 
 # p2 -  Systolic Blood Pressure (SBP)
-p2 <- pdp::partial(model.gbm, pred.var = "SBP", grid.resolution = 100, prob = TRUE) %>%
+p2 <- pdp::partial(model.gbm, pred.var = "SBP", which.class = 2, grid.resolution = 100, prob = TRUE) %>%
   autoplot(rug = TRUE, train = training_data) + 
   ggtitle("Influence of SBP") +
   ylab("Prob(Severe)")
 
 # p3 - Body Mass Index (BMI)
-p3 <- pdp::partial(model.gbm, pred.var = "bmi", grid.resolution = 100, prob = TRUE) %>%
+p3 <- pdp::partial(model.gbm, pred.var = "bmi", which.class = 2, grid.resolution = 100, prob = TRUE) %>%
   autoplot(rug = TRUE, train = training_data) + 
   ggtitle("Influence of BMI") +
   ylab("Prob(Severe)")
