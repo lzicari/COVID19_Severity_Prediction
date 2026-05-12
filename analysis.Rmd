@@ -6,6 +6,8 @@ date: "2026-05-11"
 
 ```{r}
 library(tidyverse)
+library(knitr)
+library(kableExtra)
 library(caret)
 library(tidymodels)
 library(glmnet)
@@ -16,6 +18,8 @@ library(pdp)
 library(vip)
 library(gridExtra)
 library(gbm)
+library(rpart.plot)
+library(gtsummary)
 ```
 
 ### Loading and Cleaning
@@ -56,6 +60,25 @@ testing_data <- testing(data_split)
 
 ```{r}
 summary(my_dat)
+
+my_dat %>%
+  tbl_summary(
+    by = severity, 
+    statistic = list(all_continuous() ~ "{mean} ({sd})", 
+                     all_categorical() ~ "{n} ({p}%)"),
+    digits = all_continuous() ~ 1,
+    label = list(
+      age ~ "Age (years)",
+      gender ~ "Gender",
+      bmi ~ "Body Mass Index",
+      vaccine ~ "Vaccination Status",
+      SBP ~ "Systolic Blood Pressure",
+      LDL ~ "LDL Cholesterol"
+    )
+  ) %>%
+  add_p() %>% 
+  modify_header(label = "**Variable**") %>%
+  bold_labels()
 
 # Combined Exploratory Figure
 featurePlot(x = my_dat[, c("age", "bmi", "SBP", "LDL", "depression")], 
@@ -150,6 +173,28 @@ plot(model.gam$finalModel,
 par(mfrow = c(1, 1))
 ```
 
+### Classification Tree
+
+```{r}
+grid.tree <- expand.grid(cp = seq(0.0001, 0.05, length = 50))
+
+set.seed(3015) # Using your consistent project seed
+model.tree <- train(severity ~ ., 
+                   data = training_data, 
+                   method = "rpart", 
+                   metric = "ROC", 
+                   tuneGrid = grid.tree, 
+                   trControl = ctrl)
+
+model.tree
+
+plot(model.tree)
+
+rpart.plot(model.tree$finalModel, type = 4, extra = 101, under = TRUE, cex = 0.8,
+           main = "Decision Tree for COVID-19 Severity")
+```
+
+
 # Training Advanced models
 
 ```{r}
@@ -199,6 +244,9 @@ p_enet <- plot(model.enet, par.settings = myPar, xTrans = log, main = "Enet Tuni
 # MARS tuning plot 
 p_mars <- ggplot(model.mars) + ggtitle("MARS Tuning")
 
+# Classification Tree
+p_tree <- ggplot(model.tree, highlight = TRUE) + ggtitle("Decision Tree Tuning")
+
 # Boosting tuning plot 
 p_gbm <- ggplot(model.gbm, highlight = TRUE) + ggtitle("Boosting Tuning")
 
@@ -206,8 +254,8 @@ p_gbm <- ggplot(model.gbm, highlight = TRUE) + ggtitle("Boosting Tuning")
 p_svm <- plot(model.svm, highlight = TRUE, par.settings = myPar, main = "SVM Tuning")
 
 # Grid
-grid.arrange(p_enet, p_mars, p_gbm, p_svm, 
-             nrow = 2, ncol = 2,
+grid.arrange(p_enet, p_mars, p_tree, p_gbm, p_svm, 
+             nrow = 3, ncol = 2,
              top = "Figure: Model Selection and Hyperparameter Tuning")
 ```
 
@@ -235,8 +283,21 @@ p3 <- pdp::partial(model.gbm, pred.var = "bmi", grid.resolution = 100, prob = TR
   ggtitle("Influence of BMI") +
   ylab("Prob(Severe)")
 
+# p4 - Vaccination status (binary)
+p_vac <- pdp::partial(model.gbm, 
+                      pred.var = "vaccine", 
+                      which.class = 2, # Tells R to plot the 'severe' class
+                      prob = TRUE) %>%
+  ggplot(aes(x = vaccine, y = yhat, fill = vaccine)) +
+  geom_col(width = 0.5) +
+  theme_minimal() +
+  labs(title = "Marginal Effect of Vaccination on COVID-19 Severity",
+       y = "Predicted Probability of Severe Infection",
+       x = "Vaccination Status") +
+  scale_fill_manual(values = c("Unvaccinated" = "firebrick", "Vaccinated" = "forestgreen"))
+
 # Combining
-grid.arrange(p1, p2, p3, nrow = 1)
+grid.arrange(p1, p2, p3, p_vac, nrow = 1)
 ```
 
 ---
@@ -248,6 +309,7 @@ resamp <- resamples(list(
   GLM = model.glm, 
   ENET = model.enet, 
   MARS = model.mars, 
+  TREE = model.tree,
   GAM = model.gam, 
   Boosting = model.gbm, 
   SVM = model.svm
@@ -265,33 +327,79 @@ bwplot(resamp, metric = "ROC")
 # Model Evaluation of top performers on Test Set
 
 ```{r}
-# Final validation on the Test Set (n=200) of best simple and advanced models
-probs_glm  <- predict(model.glm,  newdata = testing_data, type = "prob")[, "severe"]
-probs_enet <- predict(model.enet, newdata = testing_data, type = "prob")[, "severe"]
-probs_gbm  <- predict(model.gbm,  newdata = testing_data, type = "prob")[, "severe"]
-probs_svm  <- predict(model.svm,  newdata = testing_data, type = "prob")[, "severe"]
+# Final validation on the Test Set for ALL models
+probs_glm   <- predict(model.glm,   newdata = testing_data, type = "prob")[, "severe"]
+probs_enet  <- predict(model.enet,  newdata = testing_data, type = "prob")[, "severe"]
+probs_mars  <- predict(model.mars,  newdata = testing_data, type = "prob")[, "severe"]
+probs_tree  <- predict(model.tree,  newdata = testing_data, type = "prob")[, "severe"]
+probs_gam   <- predict(model.gam,   newdata = testing_data, type = "prob")[, "severe"]
+probs_gbm   <- predict(model.gbm,   newdata = testing_data, type = "prob")[, "severe"]
+probs_svm   <- predict(model.svm,   newdata = testing_data, type = "prob")[, "severe"]
 
-# Final Test ROC
-roc_glm_final  <- roc(testing_data$severity, probs_glm)
-roc_enet_final <- roc(testing_data$severity, probs_enet) 
-roc_gbm_final  <- roc(testing_data$severity, probs_gbm)
-roc_svm_final  <- roc(testing_data$severity, probs_svm)
+roc_glm_final   <- roc(testing_data$severity, probs_glm)
+roc_enet_final  <- roc(testing_data$severity, probs_enet)
+roc_mars_final  <- roc(testing_data$severity, probs_mars)
+roc_tree_final  <- roc(testing_data$severity, probs_tree)
+roc_gam_final   <- roc(testing_data$severity, probs_gam)
+roc_gbm_final   <- roc(testing_data$severity, probs_gbm)
+roc_svm_final   <- roc(testing_data$severity, probs_svm)
 
-# Create the final comparison figure
-ggroc(list(GLM = roc_glm_final, 
-           ENET = roc_enet_final, 
-           Boosting = roc_gbm_final, 
-           SVM = roc_svm_final), 
-      legacy.axes = TRUE) +
-  geom_abline(intercept = 0, slope = 1, color = "grey") +
-  ggtitle("Final Test Set Performance Comparison")
-
-
-auc_table <- data.frame(
-  Model = c("Baseline GLM", "Elastic Net (Best Simple)", "Boosting", "SVM"),
-  Test_AUC = c(auc(roc_glm_final), auc(roc_enet_final), auc(roc_gbm_final), auc(roc_svm_final))
+# Comparison Plot
+roc_list_final <- list(
+  GLM = roc_glm_final, 
+  ENET = roc_enet_final, 
+  MARS = roc_mars_final,
+  Tree = roc_tree_final,
+  GAM = roc_gam_final, 
+  Boosting = roc_gbm_final, 
+  SVM = roc_svm_final
 )
-print(auc_table)
+
+p_final_roc <- ggroc(roc_list_final, legacy.axes = TRUE) +
+  geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Final Test Set Performance Comparison (All Models)",
+       x = "1 - Specificity (False Positive Rate)",
+       y = "Sensitivity (True Positive Rate)") +
+  scale_color_discrete(name = "Model")
+
+
+p_final_roc
+
+# Final AUC values
+get_roc_stats <- function(roc_obj) {
+  stats <- coords(roc_obj, "best", ret = c("sensitivity", "specificity"), transpose = FALSE)
+  return(stats[1, ]) 
+}
+
+auc_table_detailed <- data.frame(
+  Model = c("Baseline GLM", "Elastic Net", "MARS", "Decision Tree", "GAM", "Boosting", "SVM"),
+  Test_AUC = c(as.numeric(auc(roc_glm_final)), 
+               as.numeric(auc(roc_enet_final)), 
+               as.numeric(auc(roc_mars_final)), 
+               as.numeric(auc(roc_tree_final)),
+               as.numeric(auc(roc_gam_final)), 
+               as.numeric(auc(roc_gbm_final)), 
+               as.numeric(auc(roc_svm_final)))
+)
+
+roc_list <- list(roc_glm_final, roc_enet_final, roc_mars_final, 
+                 roc_tree_final, roc_gam_final, roc_gbm_final, roc_svm_final)
+
+metrics_df <- do.call(rbind, lapply(roc_list, get_roc_stats))
+auc_table_detailed <- cbind(auc_table_detailed, metrics_df)
+
+auc_table_detailed %>%
+  arrange(desc(Test_AUC)) %>%
+  kable(caption = "Table 3: Final Model Performance on Unseen Test Set (n=200)",
+        col.names = c("Model", "Test AUC", "Sensitivity", "Specificity"),
+        digits = 4, 
+        booktabs = TRUE,
+        align = "lccc") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(1, bold = TRUE, background = "#DFF0D8") 
+
+  auc_table_detailed
 ```
 
 ---
@@ -299,15 +407,42 @@ print(auc_table)
 # Predictive Risk Score
 
 ```{r}
-# Generate the risk scores (probabilities) using the best-performing model (Boosting)
-test_risk_scores <- predict(model.gbm, newdata = testing_data, type = "prob")[, "severe"]
+# Generate the risk scores (probabilities) using the best-performing model (MARS)
+test_risk_scores <- predict(model.mars, newdata = testing_data, type = "prob")[, "severe"]
 
-# Attach scores to a summary table to demonstrate the clinical tool
 risk_score_report <- testing_data %>%
   mutate(Risk_Score = round(test_risk_scores, 4)) %>%
   select(age, gender, vaccine, bmi, Risk_Score)
 
-# Display the first 10 participants to show the individual risk quantification
+# Display the first 10 participants to show example of the individual risk quantification
 head(risk_score_report, 10)
+
+# Creating a table to show the predictions by age groupings and vaccination status
+risk_summary_data <- risk_score_report %>%
+  mutate(
+    age_group = cut(age, breaks = c(48, 65, 100), 
+                    labels = c( "Middle-Aged (48-65)", "Senior (65+)")),
+    Risk_Percent = Risk_Score * 100 # Convert to percentage for readability
+  )
+
+#  tbl_summary
+risk_summary_table <- risk_summary_data %>%
+  select(age_group, vaccine, gender, Risk_Percent) %>%
+  tbl_summary(
+    by = vaccine,
+    include = c(age_group, gender, Risk_Percent),
+    statistic = list(Risk_Percent ~ "{mean}% ({min}%, {max}%)"),
+    label = list(
+      age_group ~ "Age Category",
+      gender ~ "Gender",
+      Risk_Percent ~ "Predicted Risk of Severity (Mean, Range)"
+    )
+  ) %>%
+  modify_header(label = "**Patient Characteristics**") %>%
+  modify_spanning_header(all_stat_cols() ~ "**Predicted Risk by Vaccination Status**") %>%
+  bold_labels()
+
+
+risk_summary_table
 ```
 
